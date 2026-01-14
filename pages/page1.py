@@ -5,7 +5,7 @@ import plotly.graph_objects as go
 import pandas as pd
 import numpy as np
 
-import duckdb
+import sqlite3
 
 # Load static data files
 gene_pdbs = pd.read_csv("gene_pdbs")
@@ -14,7 +14,7 @@ mutfrom_options = pd.read_csv("dropdown_pdb_mut_from.csv", dtype=str)
 mutto_options = pd.read_csv("dropdown_pdb_mut_from_to.csv", dtype=str)
 
 # Load ddg info stored in DB
-duckdb_con = duckdb.connect('ddg_info/ddg_info.db', read_only=True)
+sqlite_con = sqlite3.connect('keogh.db', check_same_thread=False)
 
 # Layout
 layout = dbc.Container([
@@ -143,27 +143,36 @@ def get_pdb_values(gene_pdbs, gene_selected):
 def calculate_median(pdb_values, residual_selected, mutfrom_selected, mutto_selected):
     if mutfrom_selected is None or mutto_selected is None:
         return None
-    pdb_values_str = ', '.join(f"'{pdb}'" for pdb in pdb_values)
+    placeholders = ','.join('?' * len(pdb_values))
     query = f"""
         SELECT ddg
         FROM ddg_info
-        WHERE pdb IN ({pdb_values_str})
-        AND pdb_residual = '{residual_selected}'
-        AND mut_from = '{mutfrom_selected}'
-        AND mut_to = '{mutto_selected}'
+        WHERE pdb IN ({placeholders})
+        AND pdb_residual = ?
+        AND mut_from = ?
+        AND mut_to = ?
     """
-    filtered_ddg_info = duckdb_con.execute(query).fetchdf()
-    median_ddg = filtered_ddg_info['ddg'].median()
-    return median_ddg
+    cursor = sqlite_con.cursor()
+    cursor.execute(query, (*pdb_values, residual_selected, mutfrom_selected, mutto_selected))
+    results = cursor.fetchall()
+    if results:
+        ddg_values = [row[0] for row in results]
+        median_ddg = pd.Series(ddg_values).median()
+        return median_ddg
+    return None
 
 def ddg_for_gene_plot(gene_selected, pdb_values, median_ddg):
-    pdb_values_str = ', '.join(f"'{pdb}'" for pdb in pdb_values)
+    placeholders = ','.join('?' * len(pdb_values))
     query = f"""
         SELECT *
         FROM ddg_info
-        WHERE pdb IN ({pdb_values_str})
+        WHERE pdb IN ({placeholders})
     """
-    filtered_ddg_info = duckdb_con.execute(query).fetchdf()
+    cursor = sqlite_con.cursor()
+    cursor.execute(query, pdb_values)
+    columns = [description[0] for description in cursor.description]
+    results = cursor.fetchall()
+    filtered_ddg_info = pd.DataFrame(results, columns=columns)
 
     figure = px.histogram(
         filtered_ddg_info,
@@ -207,16 +216,20 @@ def ddg_for_gene_plot(gene_selected, pdb_values, median_ddg):
     return figure
 
 def ddg_for_variant_plot(pdb_values, residual_selected, mutfrom_selected, mutto_selected):
-    pdb_values_str = ', '.join(f"'{pdb}'" for pdb in pdb_values)
+    placeholders = ','.join('?' * len(pdb_values))
     query = f"""
         SELECT *
         FROM ddg_info
-        WHERE pdb IN ({pdb_values_str})
-        AND pdb_residual = '{residual_selected}'
-        AND mut_from = '{mutfrom_selected}'
-        AND mut_to = '{mutto_selected}'
+        WHERE pdb IN ({placeholders})
+        AND pdb_residual = ?
+        AND mut_from = ?
+        AND mut_to = ?
     """
-    filtered_ddg_info_var3 = duckdb_con.execute(query).fetchdf()
+    cursor = sqlite_con.cursor()
+    cursor.execute(query, (*pdb_values, residual_selected, mutfrom_selected, mutto_selected))
+    columns = [description[0] for description in cursor.description]
+    results = cursor.fetchall()
+    filtered_ddg_info_var3 = pd.DataFrame(results, columns=columns)
 
     # Create the histogram
     figure = px.histogram(
@@ -233,29 +246,34 @@ def ddg_for_variant_plot(pdb_values, residual_selected, mutfrom_selected, mutto_
 
 ##Callback for markdown text
 def calculate_percentile(pdb_values, residual_selected, mutfrom_selected, mutto_selected):
-    pdb_values_str = ', '.join(f"'{pdb}'" for pdb in pdb_values)
+    placeholders = ','.join('?' * len(pdb_values))
     query_all = f"""
         SELECT ddg
         FROM ddg_info
-        WHERE pdb IN ({pdb_values_str})
+        WHERE pdb IN ({placeholders})
     """
     # Execute the query and fetch the results
-    filtered_ddg_info_all = duckdb_con.execute(query_all).fetchdf()
-    values = filtered_ddg_info_all['ddg'].values
+    cursor = sqlite_con.cursor()
+    cursor.execute(query_all, pdb_values)
+    all_results = cursor.fetchall()
+    values = np.array([row[0] for row in all_results])
 
     query_variant = f"""
         SELECT ddg
         FROM ddg_info
-        WHERE pdb IN ({pdb_values_str})
-        AND pdb_residual = '{residual_selected}'
-        AND mut_from = '{mutfrom_selected}'
-        AND mut_to = '{mutto_selected}'
+        WHERE pdb IN ({placeholders})
+        AND pdb_residual = ?
+        AND mut_from = ?
+        AND mut_to = ?
     """
-    filtered_ddg_info_var3 = duckdb_con.execute(query_variant).fetchdf()
-    median_ddg = filtered_ddg_info_var3['ddg'].median()
-
-    percentile = np.sum(values < median_ddg) / len(values) * 100
-    return percentile
+    cursor.execute(query_variant, (*pdb_values, residual_selected, mutfrom_selected, mutto_selected))
+    variant_results = cursor.fetchall()
+    if variant_results:
+        ddg_values = [row[0] for row in variant_results]
+        median_ddg = pd.Series(ddg_values).median()
+        percentile = np.sum(values < median_ddg) / len(values) * 100
+        return percentile
+    return 0
 
 def gene_ddg_markdown_text(median_ddg, percentile):
     

@@ -1,4 +1,12 @@
 import os
+import sys
+
+# Mock comm module to prevent Jupyter initialization errors when running as standalone script
+class MockComm:
+    def create_comm(self, *args, **kwargs):
+        return None
+
+sys.modules['comm'] = MockComm()
 
 # Import necessary libraries
 from dash import html, dcc
